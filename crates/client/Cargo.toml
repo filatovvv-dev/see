@@ -1,0 +1,11 @@
+[package]
+name = "client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+shared = { path = "../shared" }
+sim_core = { path = "../sim_core" }
+narrative = { path = "../narrative" }
+bevy.workspace = true
+tracing.workspace = true

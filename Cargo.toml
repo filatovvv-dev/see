@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sim_core",
+    "crates/narrative",
+    "crates/client",
+    "crates/shared",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+# Общие утилиты
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+
+# ECS (минимальный набор для симуляции vs полный для клиента)
+bevy_ecs = "0.15"
+bevy = { version = "0.15", default-features = false, features = [
+    "bevy_winit",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_sprite",
+    "bevy_ui",
+    "bevy_text",
+] }
+
+# Детерминизм и математика
+rand = "0.8"
+rand_chacha = "0.3"
+
+# Асинхронность и HTTP (для LLM-адаптера)
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros"] }
+reqwest = { version = "0.12", features = ["json"] }
