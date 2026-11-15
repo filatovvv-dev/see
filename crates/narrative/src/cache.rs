@@ -1,1 +1,1 @@
-// TODO
+// TODO: NarrativeCache, VerificationStatus (Unverified/Verified/Debunked).

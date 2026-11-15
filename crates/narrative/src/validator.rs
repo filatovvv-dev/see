@@ -1,1 +1,1 @@
-// TODO
+// TODO: validate_entities(text, allowed).

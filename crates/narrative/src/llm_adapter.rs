@@ -1,1 +1,1 @@
-// TODO
+// TODO: LlmAdapter, trait LlmBackend, OllamaBackend-заглушка.
