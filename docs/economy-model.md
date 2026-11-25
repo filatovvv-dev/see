@@ -645,19 +645,22 @@
 
 ## 10. Связь с кодом
 
-Это дорожная карта, а не отчёт о готовности. Статусы: ⬜ — не
-реализовано, 🟡 — реализовано частично.
+Это дорожная карта, а не отчёт о готовности. Статусы: ✅ —
+реализовано, 🟡 — реализовано частично, ⬜ — не реализовано.
 
 | Лорный элемент | Где в коде | Статус |
 |---|---|---|
-| `Credits(u64)` | `shared/types.rs` | ⬜ не реализовано |
+| `Credits(u64)` | `shared/types.rs` | ⬜ не реализовано (типа нет, кредиты в коде — обычный `u64`: `Agent.credits`, `Contract.reward_credits`) |
 | Комиссии за сделки | `market.rs` | ⬜ не реализовано |
-| `NeuralNet.min_iq` | `character.rs` | ⬜ не реализовано |
-| `Character.citizenship` | `character.rs` | ⬜ не реализовано |
-| `KnowledgeBase.released_after_excommunication` | `character.rs` | ⬜ не реализовано |
-| `LegalStatus` (раб/свободный) | `character.rs` | ⬜ не реализовано |
+| `NeuralNet.min_iq` | `character.rs` | ✅ реализовано (PR #20) |
+| `Character.citizenship` | `character.rs` | ✅ реализовано (PR #20; `Option<Citizenship>`, у «дикого» до выбора гражданства `None`) |
+| `Character.released_after_excommunication` | `character.rs` | ✅ реализовано (PR #20) |
+| `KnowledgeBase.release_year` | `character.rs` | ✅ реализовано (PR #20) |
+| `LegalStatus` (раб/свободный) | `character.rs` | ✅ реализовано (PR #20) |
 | Рецепты (`Recipe`) | `production.rs`, JSON-данные | 🟡 структура есть, JSON-данных нет |
 | `Blueprint` (чертёж) | JSON-данные, `production.rs` | ⬜ не реализовано (нет типа, нет учёта устаревания и амортизации) |
 | Корпуса, СЖО, реакторы и другие компоненты корабля | `entities.rs` | ⬜ не реализовано (в `entities.rs` есть только `Ship` как целое) |
 | Налоги | оркестратор | ⬜ не реализовано |
 | IG-карта | `character.rs` (будущее) | ⬜ не реализовано |
+
+*Статусы синхронизированы с `main` после PR #20 (character.rs) и PR #21 (ai_agents.rs).*
