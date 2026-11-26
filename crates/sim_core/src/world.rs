@@ -15,7 +15,7 @@ use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 
 use crate::ai_agents::{AgentBrain, Plan, PlanError, WorldState};
-use crate::character::Character;
+use crate::character::{Character, FactionId};
 use crate::contracts::{ContractRegistry, ContractState};
 use crate::entities::{Agent, AgentId, Cargo, MarketOrder, Ship, ShipId, SystemId};
 use crate::factions::FactionRegistry;
@@ -73,7 +73,30 @@ pub enum WorldEvent {
         /// Суммарная стоимость плана.
         total_cost: u32,
     },
+    /// Репутация агента перед фракцией изменилась.
+    ReputationChanged {
+        /// Агент.
+        agent: AgentId,
+        /// Фракция.
+        faction: FactionId,
+        /// Прежняя репутация.
+        old: Reputation,
+        /// Новая репутация.
+        new: Reputation,
+    },
 }
+
+/// Репутация агента перед фракцией. Диапазон: `-100..=100`.
+pub type Reputation = i32;
+
+/// Минимальная репутация.
+pub const MIN_REPUTATION: Reputation = -100;
+
+/// Максимальная репутация.
+pub const MAX_REPUTATION: Reputation = 100;
+
+/// Ключ репутации: (агент, фракция).
+pub type ReputationKey = (AgentId, FactionId);
 
 /// Разум NPC-агента: мозг GOAP, его картина мира и текущий план.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,7 +168,7 @@ impl From<MarketError> for WorldError {
 }
 
 /// Текущая версия формата сохранения.
-pub const SNAPSHOT_VERSION: u32 = 1;
+pub const SNAPSHOT_VERSION: u32 = 2;
 
 /// Снимок мира для сохранения.
 ///
@@ -183,6 +206,11 @@ pub struct WorldSnapshot {
     pub next_agent_id: u64,
     /// Следующий `ShipId`.
     pub next_ship_id: u64,
+    /// Репутация агентов перед фракциями в порядке `(агент, фракция)`.
+    ///
+    /// Хранится списком троек, а не картой: JSON допускает только строковые
+    /// ключи, а ключ-кортеж `(AgentId, FactionId)` сериализовать нельзя.
+    pub reputation: Vec<(AgentId, FactionId, Reputation)>,
 }
 
 /// Мир симуляции: всё состояние и тик-цикл.
@@ -222,6 +250,8 @@ pub struct World {
     pub next_agent_id: u64,
     /// Следующий свободный идентификатор корабля.
     pub next_ship_id: u64,
+    /// Репутация агентов перед фракциями. Нулевая репутация не хранится.
+    pub reputation: BTreeMap<ReputationKey, Reputation>,
 }
 
 impl World {
@@ -243,6 +273,7 @@ impl World {
             events: Vec::new(),
             next_agent_id: 0,
             next_ship_id: 0,
+            reputation: BTreeMap::new(),
         }
     }
 
@@ -378,6 +409,47 @@ impl World {
         self.events.len()
     }
 
+    /// Репутация агента перед фракцией (0, если записи нет).
+    pub fn reputation_of(&self, agent: AgentId, faction: FactionId) -> Reputation {
+        self.reputation.get(&(agent, faction)).copied().unwrap_or(0)
+    }
+
+    /// Изменяет репутацию на `delta` с ограничением до
+    /// [`MIN_REPUTATION`]..=[`MAX_REPUTATION`] и возвращает новое значение.
+    ///
+    /// Событие `ReputationChanged` пишется, только если значение изменилось.
+    pub fn adjust_reputation(
+        &mut self,
+        agent: AgentId,
+        faction: FactionId,
+        delta: Reputation,
+    ) -> Reputation {
+        let target = self.reputation_of(agent, faction).saturating_add(delta);
+        self.set_reputation(agent, faction, target);
+        self.reputation_of(agent, faction)
+    }
+
+    /// Устанавливает репутацию (с ограничением до допустимого диапазона).
+    ///
+    /// Событие `ReputationChanged` пишется, только если значение изменилось.
+    pub fn set_reputation(&mut self, agent: AgentId, faction: FactionId, value: Reputation) {
+        let old = self.reputation_of(agent, faction);
+        let new = value.clamp(MIN_REPUTATION, MAX_REPUTATION);
+        if new == 0 {
+            self.reputation.remove(&(agent, faction));
+        } else {
+            self.reputation.insert((agent, faction), new);
+        }
+        if new != old {
+            self.events.push(WorldEvent::ReputationChanged {
+                agent,
+                faction,
+                old,
+                new,
+            });
+        }
+    }
+
     /// Сохраняет мир в JSON-строку.
     pub fn save_to_string(&self) -> Result<String, WorldError> {
         let snapshot = WorldSnapshot {
@@ -396,6 +468,11 @@ impl World {
             events: self.events.clone(),
             next_agent_id: self.next_agent_id,
             next_ship_id: self.next_ship_id,
+            reputation: self
+                .reputation
+                .iter()
+                .map(|(&(agent, faction), &value)| (agent, faction, value))
+                .collect(),
         };
         serde_json::to_string_pretty(&snapshot)
             .map_err(|e| WorldError::SerializeError(e.to_string()))
@@ -431,6 +508,14 @@ impl World {
             events: snapshot.events,
             next_agent_id: snapshot.next_agent_id,
             next_ship_id: snapshot.next_ship_id,
+            reputation: snapshot
+                .reputation
+                .into_iter()
+                .filter_map(|(agent, faction, value)| {
+                    let value = value.clamp(MIN_REPUTATION, MAX_REPUTATION);
+                    (value != 0).then_some(((agent, faction), value))
+                })
+                .collect(),
         })
     }
 
@@ -1040,7 +1125,7 @@ mod tests {
         let json = w
             .save_to_string()
             .unwrap()
-            .replace("\"version\": 1", "\"version\": 999");
+            .replace("\"version\": 2", "\"version\": 999");
         assert_eq!(
             World::load_from_string(&json).err(),
             Some(WorldError::UnsupportedVersion {
@@ -1098,6 +1183,95 @@ mod tests {
             }
             .to_string()
             .contains("2")
+        );
+    }
+
+    #[test]
+    fn reputation_defaults_to_zero() {
+        let w = World::new(1);
+        assert_eq!(w.reputation_of(AgentId(0), FactionId(1)), 0);
+    }
+
+    #[test]
+    fn adjust_reputation_clamps() {
+        let mut w = World::new(1);
+        assert_eq!(w.adjust_reputation(AgentId(0), FactionId(1), 200), 100);
+        assert_eq!(w.adjust_reputation(AgentId(0), FactionId(1), -300), -100);
+        assert_eq!(
+            w.adjust_reputation(AgentId(0), FactionId(1), i32::MIN),
+            -100
+        );
+        w.set_reputation(AgentId(0), FactionId(1), 1000);
+        assert_eq!(w.reputation_of(AgentId(0), FactionId(1)), MAX_REPUTATION);
+    }
+
+    #[test]
+    fn reputation_change_emits_event() {
+        let mut w = World::new(1);
+        w.adjust_reputation(AgentId(2), FactionId(3), 40);
+        w.adjust_reputation(AgentId(2), FactionId(3), 70);
+        assert_eq!(
+            w.events,
+            vec![
+                WorldEvent::ReputationChanged {
+                    agent: AgentId(2),
+                    faction: FactionId(3),
+                    old: 0,
+                    new: 40
+                },
+                WorldEvent::ReputationChanged {
+                    agent: AgentId(2),
+                    faction: FactionId(3),
+                    old: 40,
+                    new: 100
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn unchanged_reputation_emits_no_event() {
+        let mut w = World::new(1);
+        w.adjust_reputation(AgentId(0), FactionId(1), 0);
+        w.set_reputation(AgentId(0), FactionId(1), 0);
+        w.set_reputation(AgentId(0), FactionId(1), 100);
+        w.adjust_reputation(AgentId(0), FactionId(1), 50);
+        assert_eq!(w.events.len(), 1);
+    }
+
+    #[test]
+    fn zero_reputation_is_not_stored() {
+        let mut w = World::new(1);
+        w.set_reputation(AgentId(0), FactionId(1), 10);
+        w.set_reputation(AgentId(0), FactionId(1), 0);
+        assert!(w.reputation.is_empty());
+    }
+
+    #[test]
+    fn save_load_preserves_reputation() {
+        let mut w = World::new(1);
+        w.set_reputation(AgentId(0), FactionId(1), 55);
+        w.set_reputation(AgentId(3), FactionId(2), -70);
+        let loaded = World::load_from_string(&w.save_to_string().unwrap()).unwrap();
+        assert_eq!(loaded.reputation_of(AgentId(0), FactionId(1)), 55);
+        assert_eq!(loaded.reputation_of(AgentId(3), FactionId(2)), -70);
+        assert_eq!(loaded.reputation, w.reputation);
+        assert_eq!(loaded.events, w.events);
+    }
+
+    #[test]
+    fn snapshot_version_is_two_and_v1_is_rejected() {
+        assert_eq!(SNAPSHOT_VERSION, 2);
+        let json = World::new(1)
+            .save_to_string()
+            .unwrap()
+            .replace("\"version\": 2", "\"version\": 1");
+        assert_eq!(
+            World::load_from_string(&json).err(),
+            Some(WorldError::UnsupportedVersion {
+                found: 1,
+                expected: 2
+            })
         );
     }
 }
