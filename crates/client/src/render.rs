@@ -16,13 +16,29 @@ const SPRITE_RADIUS: f32 = 10.0;
 #[derive(Component)]
 pub struct AgentSprite(pub AgentId);
 
-/// Создаёт спрайты для всех агентов (Startup).
-pub fn spawn_agent_sprites(
+/// Ресурс: последнее поколение мира, для которого созданы спрайты.
+#[derive(Resource, Default)]
+pub struct SpritesGeneration(pub u64);
+
+/// Пересоздаёт спрайты, если поколение мира изменилось (Update).
+///
+/// Начальное поколение моста — 1, а `SpritesGeneration::default()` — 0,
+/// поэтому первый вызов создаёт спрайты, и отдельная Startup-система не
+/// нужна.
+pub fn sync_agent_sprites(
     mut commands: Commands,
     sim: Res<SimResource>,
+    mut sprites_generation: ResMut<SpritesGeneration>,
+    existing: Query<Entity, With<AgentSprite>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
+    if sprites_generation.0 == sim.0.generation {
+        return;
+    }
+    for entity in &existing {
+        commands.entity(entity).despawn();
+    }
     let mesh = meshes.add(Circle::new(SPRITE_RADIUS));
     for (id, pos) in sim.0.agent_layout(LAYOUT_RADIUS) {
         let [r, g, b, a] = agent_color(id);
@@ -33,6 +49,7 @@ pub fn spawn_agent_sprites(
             Transform::from_xyz(pos.x, pos.y, 0.0),
         ));
     }
+    sprites_generation.0 = sim.0.generation;
 }
 
 /// Обновляет позиции спрайтов по текущему тику (Update).

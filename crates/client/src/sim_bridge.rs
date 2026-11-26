@@ -68,6 +68,10 @@ pub struct SimBridge {
     pub speed: f32,
     /// Накопитель времени до следующего тика (для дробной скорости).
     pub accumulator: f32,
+    /// Поколение мира: увеличивается при каждой успешной загрузке.
+    /// Клиент по нему понимает, что спрайты нужно пересоздать. Начинается с 1,
+    /// чтобы первая синхронизация спрайтов создала их с нуля.
+    pub generation: u64,
 }
 
 impl SimBridge {
@@ -86,6 +90,7 @@ impl SimBridge {
             paused: false,
             speed: 1.0,
             accumulator: 0.0,
+            generation: 1,
         }
     }
 
@@ -182,6 +187,7 @@ impl SimBridge {
     pub fn load(&mut self, path: &std::path::Path) -> Result<(), String> {
         let world = World::load_from_file(path).map_err(|e| e.to_string())?;
         self.world = world;
+        self.generation += 1;
         Ok(())
     }
 
@@ -350,5 +356,27 @@ mod tests {
         // Неудачная загрузка не затрагивает текущий мир.
         assert_eq!(b.world.time.tick, 1);
         assert_eq!(b.world.agents.len(), 2);
+    }
+
+    #[test]
+    fn load_increments_generation() {
+        let path = std::env::temp_dir().join(format!("see_test_gen_{}.json", std::process::id()));
+        let a = SimBridge::new(42, 2);
+        a.save(&path).unwrap();
+        let mut b = SimBridge::new(1, 0);
+        let before = b.generation;
+        let loaded = b.load(&path);
+        let _ = std::fs::remove_file(&path);
+        loaded.unwrap();
+        assert_eq!(b.generation, before + 1);
+    }
+
+    #[test]
+    fn failed_load_does_not_increment_generation() {
+        let path = std::env::temp_dir().join(format!("see_nogen_{}.json", std::process::id()));
+        let mut b = SimBridge::new(42, 2);
+        let before = b.generation;
+        assert!(b.load(&path).is_err());
+        assert_eq!(b.generation, before);
     }
 }
