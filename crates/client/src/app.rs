@@ -2,7 +2,10 @@
 
 use bevy::prelude::*;
 
-use crate::render::{SpritesGeneration, sync_agent_sprites, update_agent_sprites};
+use crate::render::{
+    SpritesGeneration, WorldSpritesGeneration, sync_agent_sprites, sync_world_sprites,
+    update_agent_sprites, update_ship_sprites,
+};
 use crate::sim_bridge::{SAVE_PATH, SimBridge};
 use crate::ui::{setup_ui, update_ui};
 
@@ -16,6 +19,7 @@ impl Plugin for SeePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(SimResource(SimBridge::new(42, 5)))
             .init_resource::<SpritesGeneration>()
+            .init_resource::<WorldSpritesGeneration>()
             .add_systems(Startup, (setup_camera, setup_ui))
             .add_systems(
                 Update,
@@ -23,7 +27,9 @@ impl Plugin for SeePlugin {
                     keyboard_input,
                     sim_update,
                     sync_agent_sprites,
+                    sync_world_sprites,
                     update_agent_sprites,
+                    update_ship_sprites,
                     update_ui,
                 )
                     .chain(),
