@@ -3,12 +3,12 @@
 //! Чистая логика без Bevy: продвижение тиков по реальному времени, пауза и
 //! скорость. Тестируется без `App`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f32::consts::TAU;
 
 use narrative::NarrativeEngine;
 use narrative::llm_adapter::MockLlmClient;
-use sim_core::entities::{Agent, AgentId, SystemId};
+use sim_core::entities::{Agent, AgentId, Cargo, Ship, ShipId, SystemId};
 use sim_core::world::{World, WorldEvent};
 
 /// Тиков в секунду реального времени (при `speed = 1.0`).
@@ -33,6 +33,32 @@ pub const WOBBLE_AMPLITUDE: f32 = 10.0;
 /// Скорость колебания: радиан на тик.
 pub const WOBBLE_SPEED: f32 = 0.1;
 
+/// Число демо-систем, между которыми распределяются демо-агенты.
+const DEMO_SYSTEMS: u64 = 3;
+
+/// Число планет-декораций вокруг системы.
+const PLANETS_PER_SYSTEM: usize = 3;
+
+/// Амплитуда смещения корабля относительно центра системы, px.
+const SHIP_OFFSET: f32 = 20.0;
+
+/// Палитра систем (RGBA), выбор по `SystemId % 6`.
+const SYSTEM_PALETTE: [[f32; 4]; 6] = [
+    [0.25, 0.35, 0.55, 1.0],
+    [0.45, 0.30, 0.55, 1.0],
+    [0.25, 0.50, 0.45, 1.0],
+    [0.55, 0.40, 0.25, 1.0],
+    [0.50, 0.25, 0.30, 1.0],
+    [0.35, 0.45, 0.25, 1.0],
+];
+
+/// Палитра планет (RGBA), выбор по индексу планеты.
+const PLANET_PALETTE: [[f32; 4]; 3] = [
+    [0.70, 0.60, 0.45, 1.0],
+    [0.45, 0.65, 0.75, 1.0],
+    [0.75, 0.50, 0.50, 1.0],
+];
+
 /// Палитра агентов (RGBA), выбор по `AgentId % 8`.
 const AGENT_PALETTE: [[f32; 4]; 8] = [
     [0.90, 0.30, 0.30, 1.0],
@@ -52,6 +78,25 @@ pub struct AgentPosition {
     pub x: f32,
     /// Координата Y.
     pub y: f32,
+}
+
+/// Позиция системы на 2D-сцене (клиентская, не часть `sim_core`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SystemPosition {
+    /// Координата X.
+    pub x: f32,
+    /// Координата Y.
+    pub y: f32,
+}
+
+/// Цвет системы (RGBA) по `SystemId`: палитра из 6 цветов.
+pub fn system_color(id: SystemId) -> [f32; 4] {
+    SYSTEM_PALETTE[(id.0 % 6) as usize]
+}
+
+/// Цвет планеты (RGBA) по индексу: 3 варианта.
+pub fn planet_color(index: usize) -> [f32; 4] {
+    PLANET_PALETTE[index % PLANET_PALETTE.len()]
 }
 
 /// Цвет агента (RGBA) по `AgentId`: детерминированно из палитры из 8 цветов.
@@ -82,11 +127,18 @@ impl SimBridge {
     /// Создаёт мост с миром на зерне `seed` и `agent_count` демо-агентами.
     pub fn new(seed: u64, agent_count: usize) -> Self {
         let mut world = World::new(seed);
-        for _ in 0..agent_count {
-            world.spawn_agent(Agent {
+        for i in 0..agent_count {
+            // Демо-агенты распределены по нескольким системам, у каждого
+            // по одному кораблю: так на сцене видны системы и корабли.
+            let owner = world.spawn_agent(Agent {
                 id: AgentId(0),
                 credits: 1000,
-                location: SystemId(0),
+                location: SystemId(i as u64 % DEMO_SYSTEMS),
+            });
+            world.spawn_ship(Ship {
+                id: ShipId(0),
+                owner,
+                cargo: Cargo::new(),
             });
         }
         Self {
@@ -194,6 +246,74 @@ impl SimBridge {
         self.world = world;
         self.generation += 1;
         Ok(())
+    }
+
+    /// Известные системы: рынки и локации агентов, без повторов, по
+    /// возрастанию `SystemId`.
+    pub fn known_systems(&self) -> Vec<SystemId> {
+        let mut systems: BTreeSet<SystemId> = self.world.markets.keys().copied().collect();
+        systems.extend(self.world.agents.values().map(|a| a.location));
+        systems.into_iter().collect()
+    }
+
+    /// Раскладка систем по кругу радиуса `radius` в порядке `SystemId`.
+    ///
+    /// Система с индексом `i` из `n` получает угол `2π·i/n`.
+    pub fn system_layout(&self, radius: f32) -> BTreeMap<SystemId, SystemPosition> {
+        let systems = self.known_systems();
+        let n = systems.len();
+        systems
+            .into_iter()
+            .enumerate()
+            .map(|(i, id)| {
+                let angle = TAU * i as f32 / n as f32;
+                (
+                    id,
+                    SystemPosition {
+                        x: radius * angle.cos(),
+                        y: radius * angle.sin(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Планеты-декорации системы: 3 точки на орбите радиуса `orbit_radius`,
+    /// координаты относительно центра системы. Фаза зависит от `SystemId`.
+    pub fn planet_layout(&self, system: SystemId, orbit_radius: f32) -> Vec<SystemPosition> {
+        (0..PLANETS_PER_SYSTEM)
+            .map(|j| {
+                let angle = TAU * j as f32 / PLANETS_PER_SYSTEM as f32 + system.0 as f32 * 0.1;
+                SystemPosition {
+                    x: orbit_radius * angle.cos(),
+                    y: orbit_radius * angle.sin(),
+                }
+            })
+            .collect()
+    }
+
+    /// Позиции кораблей: позиция системы владельца плюс детерминированное
+    /// смещение `sin(ShipId·0.37)·20` по обеим осям.
+    ///
+    /// Корабли, чей владелец неизвестен, пропускаются.
+    pub fn ship_positions(&self, system_radius: f32) -> BTreeMap<ShipId, SystemPosition> {
+        let layout = self.system_layout(system_radius);
+        self.world
+            .ships
+            .values()
+            .filter_map(|ship| {
+                let agent = self.world.agents.get(&ship.owner)?;
+                let base = layout.get(&agent.location)?;
+                let offset = (ship.id.0 as f32 * 0.37).sin() * SHIP_OFFSET;
+                Some((
+                    ship.id,
+                    SystemPosition {
+                        x: base.x + offset,
+                        y: base.y + offset,
+                    },
+                ))
+            })
+            .collect()
     }
 
     /// Генерирует сцену через `narrative` (заглушка `MockLlmClient`, без
@@ -415,5 +535,80 @@ mod tests {
         assert!(b.generate_scene("").is_err());
         assert!(b.generate_scene("   ").is_err());
         assert_eq!(b.last_scene, before);
+    }
+
+    #[test]
+    fn known_systems_collects_from_markets_and_agents() {
+        let mut b = SimBridge::new(42, 0);
+        assert!(b.known_systems().is_empty());
+        assert!(b.system_layout(100.0).is_empty());
+        b.world.create_market(SystemId(5));
+        b.world.spawn_agent(Agent {
+            id: AgentId(0),
+            credits: 1,
+            location: SystemId(3),
+        });
+        b.world.spawn_agent(Agent {
+            id: AgentId(0),
+            credits: 1,
+            location: SystemId(5),
+        });
+        assert_eq!(b.known_systems(), vec![SystemId(3), SystemId(5)]);
+    }
+
+    #[test]
+    fn system_layout_is_deterministic() {
+        let a = SimBridge::new(42, 5);
+        let b = SimBridge::new(42, 5);
+        assert_eq!(a.system_layout(300.0), a.system_layout(300.0));
+        assert_eq!(a.system_layout(300.0), b.system_layout(300.0));
+        assert_eq!(a.system_layout(300.0).len(), 3);
+    }
+
+    #[test]
+    fn planet_layout_returns_three_planets() {
+        let b = SimBridge::new(42, 1);
+        let planets = b.planet_layout(SystemId(2), 50.0);
+        assert_eq!(planets.len(), 3);
+        for p in planets {
+            let r = (p.x * p.x + p.y * p.y).sqrt();
+            assert!((r - 50.0).abs() < 0.01, "r = {r}");
+        }
+        assert_ne!(
+            b.planet_layout(SystemId(0), 50.0),
+            b.planet_layout(SystemId(1), 50.0)
+        );
+    }
+
+    #[test]
+    fn ship_positions_place_ship_near_system() {
+        let b = SimBridge::new(42, 5);
+        let layout = b.system_layout(350.0);
+        let ships = b.ship_positions(350.0);
+        assert_eq!(ships.len(), 5);
+        for (ship_id, pos) in &ships {
+            let owner = b.world.ships[ship_id].owner;
+            let center = layout[&b.world.agents[&owner].location];
+            let d = ((pos.x - center.x).powi(2) + (pos.y - center.y).powi(2)).sqrt();
+            assert!(d <= 30.0, "d = {d}");
+        }
+    }
+
+    #[test]
+    fn ship_with_unknown_owner_is_skipped() {
+        let mut b = SimBridge::new(42, 0);
+        b.world.spawn_ship(Ship {
+            id: ShipId(0),
+            owner: AgentId(99),
+            cargo: Cargo::new(),
+        });
+        assert!(b.ship_positions(100.0).is_empty());
+    }
+
+    #[test]
+    fn system_and_planet_colors_cycle() {
+        assert_eq!(system_color(SystemId(0)), system_color(SystemId(6)));
+        assert_ne!(system_color(SystemId(0)), system_color(SystemId(1)));
+        assert_eq!(planet_color(0), planet_color(3));
     }
 }
