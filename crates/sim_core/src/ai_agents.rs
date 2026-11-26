@@ -211,7 +211,7 @@ impl Plan {
 }
 
 /// Ошибка планирования.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlanError {
     /// План, достигающий цели, не найден: пространство поиска исчерпано.
     NoPlanFound,

@@ -24,10 +24,7 @@ use crate::production::{CompletedBatch, ProductionQueue, Recipe, apply_batch};
 use crate::time::GameTime;
 
 /// Событие, записанное в журнал мира.
-///
-/// `Serialize`/`Deserialize` не выводятся: [`PlanError`] из `ai_agents.rs`
-/// их не реализует, а менять чужой модуль нельзя.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorldEvent {
     /// Начало тика.
     Tick {
@@ -92,7 +89,7 @@ pub struct AgentMind {
 }
 
 /// Ошибка операции над [`World`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorldError {
     /// Агент с таким идентификатором не найден.
     AgentNotFound(AgentId),
@@ -104,6 +101,17 @@ pub enum WorldError {
     MarketNotFound(SystemId),
     /// Ошибка рынка.
     MarketError(MarketError),
+    /// Ошибка сериализации при сохранении.
+    SerializeError(String),
+    /// Ошибка десериализации при загрузке.
+    DeserializeError(String),
+    /// Версия сохранения не поддерживается.
+    UnsupportedVersion {
+        /// Версия в сохранении.
+        found: u32,
+        /// Поддерживаемая версия.
+        expected: u32,
+    },
 }
 
 impl fmt::Display for WorldError {
@@ -118,6 +126,12 @@ impl fmt::Display for WorldError {
             }
             WorldError::MarketNotFound(id) => write!(f, "рынок в системе {} не найден", id.0),
             WorldError::MarketError(e) => write!(f, "ошибка рынка: {e}"),
+            WorldError::SerializeError(msg) => write!(f, "ошибка сохранения: {msg}"),
+            WorldError::DeserializeError(msg) => write!(f, "ошибка загрузки: {msg}"),
+            WorldError::UnsupportedVersion { found, expected } => write!(
+                f,
+                "версия сохранения {found} не поддерживается (ожидается {expected})"
+            ),
         }
     }
 }
@@ -130,6 +144,47 @@ impl From<MarketError> for WorldError {
     }
 }
 
+/// Текущая версия формата сохранения.
+pub const SNAPSHOT_VERSION: u32 = 1;
+
+/// Снимок мира для сохранения.
+///
+/// `ChaCha8Rng` не сериализуется, поэтому хранится зерно `rng_seed`, а
+/// генератор пересоздаётся при загрузке.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorldSnapshot {
+    /// Версия формата сохранения.
+    pub version: u32,
+    /// Зерно для пересоздания `ChaCha8Rng`.
+    pub rng_seed: u64,
+    /// Игровое время.
+    pub time: GameTime,
+    /// Агенты.
+    pub agents: BTreeMap<AgentId, Agent>,
+    /// Корабли.
+    pub ships: BTreeMap<ShipId, Ship>,
+    /// Персонажи.
+    pub characters: BTreeMap<AgentId, Character>,
+    /// Разумы NPC-агентов (состояние, мозг и текущий план).
+    pub minds: BTreeMap<AgentId, AgentMind>,
+    /// Склады агентов.
+    pub cargo: BTreeMap<AgentId, Cargo>,
+    /// Рынки.
+    pub markets: BTreeMap<SystemId, Market>,
+    /// Очереди производства.
+    pub production_queues: BTreeMap<AgentId, ProductionQueue>,
+    /// Реестр фракций.
+    pub factions: FactionRegistry,
+    /// Реестр контрактов.
+    pub contracts: ContractRegistry,
+    /// Журнал событий.
+    pub events: Vec<WorldEvent>,
+    /// Следующий `AgentId`.
+    pub next_agent_id: u64,
+    /// Следующий `ShipId`.
+    pub next_ship_id: u64,
+}
+
 /// Мир симуляции: всё состояние и тик-цикл.
 ///
 /// Намеренно не `Clone`: мир — единственный экземпляр состояния.
@@ -137,6 +192,8 @@ impl From<MarketError> for WorldError {
 pub struct World {
     /// Игровое время.
     pub time: GameTime,
+    /// Зерно генератора; нужно для сохранения (сам генератор не сериализуется).
+    pub rng_seed: u64,
     /// Генератор случайных чисел мира (ChaCha8, задаётся зерном).
     pub rng: ChaCha8Rng,
     /// Агенты.
@@ -172,6 +229,7 @@ impl World {
     pub fn new(seed: u64) -> Self {
         Self {
             time: GameTime::new(),
+            rng_seed: seed,
             rng: ChaCha8Rng::seed_from_u64(seed),
             agents: BTreeMap::new(),
             ships: BTreeMap::new(),
@@ -318,6 +376,75 @@ impl World {
     /// Число событий в журнале.
     pub fn events_len(&self) -> usize {
         self.events.len()
+    }
+
+    /// Сохраняет мир в JSON-строку.
+    pub fn save_to_string(&self) -> Result<String, WorldError> {
+        let snapshot = WorldSnapshot {
+            version: SNAPSHOT_VERSION,
+            rng_seed: self.rng_seed,
+            time: self.time,
+            agents: self.agents.clone(),
+            ships: self.ships.clone(),
+            characters: self.characters.clone(),
+            minds: self.minds.clone(),
+            cargo: self.cargo.clone(),
+            markets: self.markets.clone(),
+            production_queues: self.production_queues.clone(),
+            factions: self.factions.clone(),
+            contracts: self.contracts.clone(),
+            events: self.events.clone(),
+            next_agent_id: self.next_agent_id,
+            next_ship_id: self.next_ship_id,
+        };
+        serde_json::to_string_pretty(&snapshot)
+            .map_err(|e| WorldError::SerializeError(e.to_string()))
+    }
+
+    /// Загружает мир из JSON-строки.
+    ///
+    /// Генератор пересоздаётся из сохранённого зерна. Состояние генератора
+    /// не сохраняется: `sim_core` пока не извлекает из него числа, так что
+    /// пересозданный генератор совпадает с исходным.
+    pub fn load_from_string(s: &str) -> Result<Self, WorldError> {
+        let snapshot: WorldSnapshot =
+            serde_json::from_str(s).map_err(|e| WorldError::DeserializeError(e.to_string()))?;
+        if snapshot.version != SNAPSHOT_VERSION {
+            return Err(WorldError::UnsupportedVersion {
+                found: snapshot.version,
+                expected: SNAPSHOT_VERSION,
+            });
+        }
+        Ok(Self {
+            time: snapshot.time,
+            rng_seed: snapshot.rng_seed,
+            rng: ChaCha8Rng::seed_from_u64(snapshot.rng_seed),
+            agents: snapshot.agents,
+            ships: snapshot.ships,
+            characters: snapshot.characters,
+            minds: snapshot.minds,
+            markets: snapshot.markets,
+            production_queues: snapshot.production_queues,
+            cargo: snapshot.cargo,
+            factions: snapshot.factions,
+            contracts: snapshot.contracts,
+            events: snapshot.events,
+            next_agent_id: snapshot.next_agent_id,
+            next_ship_id: snapshot.next_ship_id,
+        })
+    }
+
+    /// Сохраняет мир в файл.
+    pub fn save_to_file(&self, path: &std::path::Path) -> Result<(), WorldError> {
+        let json = self.save_to_string()?;
+        std::fs::write(path, json).map_err(|e| WorldError::SerializeError(e.to_string()))
+    }
+
+    /// Загружает мир из файла.
+    pub fn load_from_file(path: &std::path::Path) -> Result<Self, WorldError> {
+        let json = std::fs::read_to_string(path)
+            .map_err(|e| WorldError::DeserializeError(e.to_string()))?;
+        Self::load_from_string(&json)
     }
 
     /// Завершает готовые партии и складывает продукцию на склад агента.
@@ -856,5 +983,121 @@ mod tests {
         b.advance(10);
         assert_eq!(a.events, b.events);
         assert!(!a.events.is_empty());
+    }
+
+    #[test]
+    fn save_load_roundtrip_preserves_state() {
+        let mut w = build(42);
+        w.advance(6);
+        let loaded = World::load_from_string(&w.save_to_string().unwrap()).unwrap();
+        assert_eq!(loaded.time.tick, w.time.tick);
+        assert_eq!(loaded.agents, w.agents);
+        assert_eq!(loaded.events, w.events);
+        assert_eq!(loaded.minds, w.minds);
+        assert_eq!(loaded.cargo, w.cargo);
+        assert_eq!(loaded.next_agent_id, w.next_agent_id);
+        assert_eq!(loaded.markets.len(), w.markets.len());
+        assert_eq!(loaded.production_queues.len(), w.production_queues.len());
+    }
+
+    #[test]
+    fn save_load_preserves_rng_seed() {
+        let mut a = build(42);
+        a.advance(3);
+        let mut b = World::load_from_string(&a.save_to_string().unwrap()).unwrap();
+        assert_eq!(b.rng_seed, 42);
+        assert_eq!(a.rng, b.rng);
+        a.advance(10);
+        b.advance(10);
+        assert_eq!(a.events, b.events);
+    }
+
+    #[test]
+    fn save_load_keeps_market_orders_and_pending_production() {
+        let mut w = build(1);
+        w.submit_order(
+            SystemId(1),
+            MarketOrder {
+                order_id: 9,
+                item: ItemId(2),
+                price: 5,
+                quantity: 3,
+                is_buy: false,
+            },
+        )
+        .unwrap();
+        w.advance(1);
+        let mut loaded = World::load_from_string(&w.save_to_string().unwrap()).unwrap();
+        assert_eq!(loaded.markets[&SystemId(1)].best_ask(ItemId(2)), Some(5));
+        // Незавершённая партия (рецепт на 4 тика) дозавершается после загрузки.
+        loaded.advance(4);
+        assert_eq!(loaded.cargo[&AgentId(1)].get(ItemId(7)), 3);
+    }
+
+    #[test]
+    fn load_unsupported_version_fails() {
+        let w = World::new(1);
+        let json = w
+            .save_to_string()
+            .unwrap()
+            .replace("\"version\": 1", "\"version\": 999");
+        assert_eq!(
+            World::load_from_string(&json).err(),
+            Some(WorldError::UnsupportedVersion {
+                found: 999,
+                expected: SNAPSHOT_VERSION
+            })
+        );
+    }
+
+    #[test]
+    fn load_invalid_json_fails() {
+        assert!(matches!(
+            World::load_from_string("not json"),
+            Err(WorldError::DeserializeError(_))
+        ));
+    }
+
+    #[test]
+    fn save_load_empty_world() {
+        let w = World::new(7);
+        let loaded = World::load_from_string(&w.save_to_string().unwrap()).unwrap();
+        assert!(loaded.agents.is_empty());
+        assert_eq!(loaded.time.tick, 0);
+        assert_eq!(loaded.rng_seed, 7);
+    }
+
+    #[test]
+    fn save_load_file_roundtrip_and_missing_file() {
+        let mut w = build(5);
+        w.advance(2);
+        let dir = std::env::temp_dir().join(format!("see_world_save_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("world.json");
+        w.save_to_file(&path).unwrap();
+        let loaded = World::load_from_file(&path).unwrap();
+        assert_eq!(loaded.events, w.events);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(matches!(
+            World::load_from_file(&path),
+            Err(WorldError::DeserializeError(_))
+        ));
+    }
+
+    #[test]
+    fn world_error_display_for_save_load() {
+        assert!(
+            WorldError::SerializeError("x".into())
+                .to_string()
+                .contains("x")
+        );
+        assert!(
+            WorldError::UnsupportedVersion {
+                found: 2,
+                expected: 1
+            }
+            .to_string()
+            .contains("2")
+        );
     }
 }

@@ -44,7 +44,7 @@ pub struct Trade {
 }
 
 /// Рынок: книга открытых ордеров и история цен по предметам.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Market {
     orders: Vec<MarketOrder>,
     price_history: BTreeMap<ItemId, Vec<u64>>,

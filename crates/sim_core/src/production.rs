@@ -35,7 +35,7 @@ pub struct CompletedBatch {
 }
 
 /// Задание в очереди производства.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Job {
     recipe: Recipe,
     quantity: u64,
@@ -45,7 +45,7 @@ struct Job {
 /// Очередь производственных заданий.
 ///
 /// Завершённые задания выдаются в порядке добавления в очередь.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProductionQueue {
     jobs: Vec<Job>,
 }
