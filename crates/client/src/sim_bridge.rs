@@ -12,6 +12,9 @@ use sim_core::world::{World, WorldEvent};
 /// Тиков в секунду реального времени (при `speed = 1.0`).
 pub const TICKS_PER_SECOND: f32 = 1.0;
 
+/// Путь файла сохранения по умолчанию (в текущей директории).
+pub const SAVE_PATH: &str = "save.json";
+
 /// Минимальная скорость симуляции.
 pub const MIN_SPEED: f32 = 0.1;
 
@@ -168,6 +171,20 @@ impl SimBridge {
             .collect()
     }
 
+    /// Сохраняет мир в файл `path`.
+    pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
+        self.world.save_to_file(path).map_err(|e| e.to_string())
+    }
+
+    /// Загружает мир из файла `path`, целиком заменяя текущий.
+    ///
+    /// При ошибке текущий мир не меняется.
+    pub fn load(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let world = World::load_from_file(path).map_err(|e| e.to_string())?;
+        self.world = world;
+        Ok(())
+    }
+
     /// События за последние `n` тиков (включая текущий), по порядку.
     pub fn recent_events(&self, n: usize) -> Vec<&WorldEvent> {
         if n == 0 {
@@ -306,5 +323,32 @@ mod tests {
         assert_eq!(agent_color(AgentId(0)), agent_color(AgentId(8)));
         assert_ne!(agent_color(AgentId(0)), agent_color(AgentId(1)));
         assert_eq!(agent_color(AgentId(3)), AGENT_PALETTE[3]);
+    }
+
+    #[test]
+    fn save_and_load_roundtrip_via_bridge() {
+        let path = std::env::temp_dir().join(format!("see_test_save_{}.json", std::process::id()));
+        let mut a = SimBridge::new(42, 3);
+        a.update(3.0);
+        a.save(&path).unwrap();
+
+        let mut b = SimBridge::new(1, 0);
+        let loaded = b.load(&path);
+        let _ = std::fs::remove_file(&path);
+        loaded.unwrap();
+        assert_eq!(b.world.time.tick, a.world.time.tick);
+        assert_eq!(b.world.agents.len(), 3);
+        assert_eq!(b.world.events, a.world.events);
+    }
+
+    #[test]
+    fn load_missing_file_fails() {
+        let path = std::env::temp_dir().join(format!("see_missing_{}.json", std::process::id()));
+        let mut b = SimBridge::new(42, 2);
+        b.update(1.0);
+        assert!(b.load(&path).is_err());
+        // Неудачная загрузка не затрагивает текущий мир.
+        assert_eq!(b.world.time.tick, 1);
+        assert_eq!(b.world.agents.len(), 2);
     }
 }
