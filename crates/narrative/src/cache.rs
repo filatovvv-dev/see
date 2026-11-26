@@ -1,1 +1,1 @@
-// TODO: NarrativeCache, VerificationStatus (Unverified/Verified/Debunked).
+//! Кэш сгенерированных текстов. Заглушка. Реализация — в следующих PR.
