@@ -7,6 +7,7 @@ edition.workspace = true
 shared = { path = "../shared" }
 bevy_ecs.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
 tracing.workspace = true
