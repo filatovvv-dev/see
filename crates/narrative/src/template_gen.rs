@@ -1,1 +1,1 @@
-// TODO: TemplateGenerator — fallback без LLM.
+//! Шаблонная генерация без LLM. Заглушка. Реализация — в следующих PR.
