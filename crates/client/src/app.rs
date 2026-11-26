@@ -46,7 +46,7 @@ fn sim_update(time: Res<Time>, mut sim: ResMut<SimResource>) {
 }
 
 /// Клавиши: Space — пауза, Up/Down — скорость, F5 — сохранить, F9 — загрузить,
-/// Esc — выход.
+/// G — сгенерировать сцену, Esc — выход.
 fn keyboard_input(
     keys: Res<ButtonInput<KeyCode>>,
     mut sim: ResMut<SimResource>,
@@ -73,6 +73,17 @@ fn keyboard_input(
         match sim.0.load(std::path::Path::new(SAVE_PATH)) {
             Ok(()) => info!("Загружено из {SAVE_PATH}"),
             Err(e) => warn!("Ошибка загрузки: {e}"),
+        }
+    }
+    if keys.just_pressed(KeyCode::KeyG) {
+        let context = format!(
+            "Тик {}, агентов {}",
+            sim.0.world.time.tick,
+            sim.0.world.agents.len()
+        );
+        match sim.0.generate_scene(&context) {
+            Ok(()) => info!("Сцена сгенерирована"),
+            Err(e) => warn!("Ошибка генерации: {e}"),
         }
     }
     if keys.just_pressed(KeyCode::Escape) {
