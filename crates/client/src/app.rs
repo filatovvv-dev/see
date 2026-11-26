@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 
+use crate::render::{spawn_agent_sprites, update_agent_sprites};
 use crate::sim_bridge::SimBridge;
 use crate::ui::{setup_ui, update_ui};
 
@@ -14,8 +15,11 @@ pub struct SeePlugin;
 impl Plugin for SeePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(SimResource(SimBridge::new(42, 5)))
-            .add_systems(Startup, (setup_camera, setup_ui))
-            .add_systems(Update, (keyboard_input, sim_update, update_ui).chain());
+            .add_systems(Startup, (setup_camera, spawn_agent_sprites, setup_ui))
+            .add_systems(
+                Update,
+                (keyboard_input, sim_update, update_agent_sprites, update_ui).chain(),
+            );
     }
 }
 
