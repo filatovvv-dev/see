@@ -7,15 +7,22 @@ use crate::app::SimResource;
 /// Сколько последних событий показывать.
 const SHOWN_EVENTS: usize = 3;
 
+/// Путь к шрифту с кириллицей относительно каталога `assets` крейта `client`
+/// (Bevy ищет ресурсы в `$CARGO_MANIFEST_DIR/assets`, то есть в
+/// `crates/client/assets`).
+pub const FONT_PATH: &str = "fonts/NotoSans-Regular.ttf";
+
 /// Маркер: текстовый блок с информацией.
 #[derive(Component)]
 pub struct InfoText;
 
 /// Создаёт текстовый блок в левом верхнем углу.
-pub fn setup_ui(mut commands: Commands) {
+pub fn setup_ui(mut commands: Commands, asset_server: Res<AssetServer>) {
+    let font = asset_server.load(FONT_PATH);
     commands.spawn((
         Text::new("SEE"),
         TextFont {
+            font,
             font_size: 20.0,
             ..default()
         },
@@ -47,5 +54,24 @@ pub fn update_ui(sim: Res<SimResource>, mut query: Query<&mut Text, With<InfoTex
     }
     for mut ui_text in &mut query {
         ui_text.0.clone_from(&text);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn font_file_exists() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("assets")
+            .join(FONT_PATH);
+        assert!(path.exists(), "font not found: {}", path.display());
+    }
+
+    #[test]
+    fn font_path_is_relative_to_assets() {
+        assert!(!FONT_PATH.starts_with("assets"));
+        assert!(!FONT_PATH.starts_with('/'));
     }
 }
