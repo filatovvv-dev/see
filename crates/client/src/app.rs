@@ -3,7 +3,7 @@
 use bevy::prelude::*;
 
 use crate::render::{spawn_agent_sprites, update_agent_sprites};
-use crate::sim_bridge::SimBridge;
+use crate::sim_bridge::{SAVE_PATH, SimBridge};
 use crate::ui::{setup_ui, update_ui};
 
 /// Шаг изменения скорости по клавишам Up/Down.
@@ -37,7 +37,8 @@ fn sim_update(time: Res<Time>, mut sim: ResMut<SimResource>) {
     sim.0.update(time.delta_secs());
 }
 
-/// Клавиши: Space — пауза, Up/Down — скорость, Esc — выход.
+/// Клавиши: Space — пауза, Up/Down — скорость, F5 — сохранить, F9 — загрузить,
+/// Esc — выход.
 fn keyboard_input(
     keys: Res<ButtonInput<KeyCode>>,
     mut sim: ResMut<SimResource>,
@@ -53,6 +54,18 @@ fn keyboard_input(
     if keys.just_pressed(KeyCode::ArrowDown) {
         let speed = sim.0.speed - SPEED_STEP;
         sim.0.set_speed(speed);
+    }
+    if keys.just_pressed(KeyCode::F5) {
+        match sim.0.save(std::path::Path::new(SAVE_PATH)) {
+            Ok(()) => info!("Сохранено в {SAVE_PATH}"),
+            Err(e) => warn!("Ошибка сохранения: {e}"),
+        }
+    }
+    if keys.just_pressed(KeyCode::F9) {
+        match sim.0.load(std::path::Path::new(SAVE_PATH)) {
+            Ok(()) => info!("Загружено из {SAVE_PATH}"),
+            Err(e) => warn!("Ошибка загрузки: {e}"),
+        }
     }
     if keys.just_pressed(KeyCode::Escape) {
         exit.send(AppExit::Success);
