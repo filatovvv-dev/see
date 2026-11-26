@@ -12,6 +12,9 @@ const SHOWN_EVENTS: usize = 3;
 /// `crates/client/assets`).
 pub const FONT_PATH: &str = "fonts/NotoSans-Regular.ttf";
 
+/// Максимум символов сцены в UI.
+const SCENE_MAX_CHARS: usize = 200;
+
 /// Маркер: текстовый блок с информацией.
 #[derive(Component)]
 pub struct InfoText;
@@ -51,6 +54,15 @@ pub fn update_ui(sim: Res<SimResource>, mut query: Query<&mut Text, With<InfoTex
     );
     for event in events.into_iter().skip(skip) {
         text.push_str(&format!("\n  {event:?}"));
+    }
+    if let Some(scene) = &bridge.last_scene {
+        let shown: String = scene.chars().take(SCENE_MAX_CHARS).collect();
+        let ellipsis = if scene.chars().count() > SCENE_MAX_CHARS {
+            "…"
+        } else {
+            ""
+        };
+        text.push_str(&format!("\n\nСцена:\n{shown}{ellipsis}"));
     }
     for mut ui_text in &mut query {
         ui_text.0.clone_from(&text);

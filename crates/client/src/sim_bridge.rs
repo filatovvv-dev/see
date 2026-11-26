@@ -6,6 +6,8 @@
 use std::collections::BTreeMap;
 use std::f32::consts::TAU;
 
+use narrative::NarrativeEngine;
+use narrative::llm_adapter::MockLlmClient;
 use sim_core::entities::{Agent, AgentId, SystemId};
 use sim_core::world::{World, WorldEvent};
 
@@ -72,6 +74,8 @@ pub struct SimBridge {
     /// Клиент по нему понимает, что спрайты нужно пересоздать. Начинается с 1,
     /// чтобы первая синхронизация спрайтов создала их с нуля.
     pub generation: u64,
+    /// Последняя сгенерированная сцена (для UI). В сохранение не входит.
+    pub last_scene: Option<String>,
 }
 
 impl SimBridge {
@@ -91,6 +95,7 @@ impl SimBridge {
             speed: 1.0,
             accumulator: 0.0,
             generation: 1,
+            last_scene: None,
         }
     }
 
@@ -188,6 +193,18 @@ impl SimBridge {
         let world = World::load_from_file(path).map_err(|e| e.to_string())?;
         self.world = world;
         self.generation += 1;
+        Ok(())
+    }
+
+    /// Генерирует сцену через `narrative` (заглушка `MockLlmClient`, без
+    /// сети) и сохраняет её в `last_scene`.
+    ///
+    /// Движок создаётся при каждом вызове: заглушка дешёвая и без состояния.
+    /// При ошибке (например, пустой контекст) `last_scene` не меняется.
+    pub fn generate_scene(&mut self, context: &str) -> Result<(), String> {
+        let engine = NarrativeEngine::new(Box::new(MockLlmClient::default_mock()));
+        let scene = engine.generate_scene(context).map_err(|e| e.to_string())?;
+        self.last_scene = Some(scene);
         Ok(())
     }
 
@@ -378,5 +395,25 @@ mod tests {
         let before = b.generation;
         assert!(b.load(&path).is_err());
         assert_eq!(b.generation, before);
+    }
+
+    #[test]
+    fn generate_scene_sets_last_scene() {
+        let mut b = SimBridge::new(42, 1);
+        assert!(b.last_scene.is_none());
+        b.generate_scene("test").unwrap();
+        let scene = b.last_scene.as_deref().unwrap_or_default();
+        assert!(scene.contains("[mock]"));
+        assert!(scene.contains("test"));
+    }
+
+    #[test]
+    fn generate_scene_empty_context_fails() {
+        let mut b = SimBridge::new(42, 1);
+        b.generate_scene("first").unwrap();
+        let before = b.last_scene.clone();
+        assert!(b.generate_scene("").is_err());
+        assert!(b.generate_scene("   ").is_err());
+        assert_eq!(b.last_scene, before);
     }
 }
