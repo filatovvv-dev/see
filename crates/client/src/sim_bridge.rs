@@ -3,6 +3,9 @@
 //! Чистая логика без Bevy: продвижение тиков по реальному времени, пауза и
 //! скорость. Тестируется без `App`.
 
+use std::collections::BTreeMap;
+use std::f32::consts::TAU;
+
 use sim_core::entities::{Agent, AgentId, SystemId};
 use sim_core::world::{World, WorldEvent};
 
@@ -18,6 +21,39 @@ pub const MAX_SPEED: f32 = 10.0;
 /// Максимум тиков за один вызов [`SimBridge::update`]: защита от лавины
 /// тиков после долгого кадра.
 pub const MAX_TICKS_PER_UPDATE: u32 = 100;
+
+/// Амплитуда колебания агента вокруг базовой позиции, px.
+pub const WOBBLE_AMPLITUDE: f32 = 10.0;
+
+/// Скорость колебания: радиан на тик.
+pub const WOBBLE_SPEED: f32 = 0.1;
+
+/// Палитра агентов (RGBA), выбор по `AgentId % 8`.
+const AGENT_PALETTE: [[f32; 4]; 8] = [
+    [0.90, 0.30, 0.30, 1.0],
+    [0.95, 0.60, 0.20, 1.0],
+    [0.95, 0.85, 0.30, 1.0],
+    [0.40, 0.80, 0.40, 1.0],
+    [0.30, 0.75, 0.85, 1.0],
+    [0.35, 0.50, 0.95, 1.0],
+    [0.65, 0.40, 0.90, 1.0],
+    [0.90, 0.45, 0.75, 1.0],
+];
+
+/// Позиция агента на 2D-сцене (клиентская, не часть `sim_core`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AgentPosition {
+    /// Координата X.
+    pub x: f32,
+    /// Координата Y.
+    pub y: f32,
+}
+
+/// Цвет агента (RGBA) по `AgentId`: детерминированно из палитры из 8 цветов.
+pub fn agent_color(id: AgentId) -> [f32; 4] {
+    // `% 8` < 8, поэтому приведение к индексу безопасно.
+    AGENT_PALETTE[(id.0 % 8) as usize]
+}
 
 /// Мост между Bevy и `sim_core::World`.
 pub struct SimBridge {
@@ -86,6 +122,50 @@ impl SimBridge {
         } else {
             speed.clamp(MIN_SPEED, MAX_SPEED)
         };
+    }
+
+    /// Раскладка агентов по кругу радиуса `radius` в порядке `AgentId`.
+    ///
+    /// Агент с индексом `i` из `n` получает угол `2π·i/n`.
+    pub fn agent_layout(&self, radius: f32) -> BTreeMap<AgentId, AgentPosition> {
+        let n = self.world.agents.len();
+        self.world
+            .agents
+            .keys()
+            .enumerate()
+            .map(|(i, &id)| {
+                let angle = TAU * i as f32 / n as f32;
+                (
+                    id,
+                    AgentPosition {
+                        x: radius * angle.cos(),
+                        y: radius * angle.sin(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Позиции агентов с учётом текущего тика: к базовой раскладке
+    /// добавляется смещение `sin(tick·0.1 + i)·10` по обеим осям.
+    ///
+    /// Мир не меняется, тик только читается.
+    pub fn agent_positions(&self, radius: f32) -> BTreeMap<AgentId, AgentPosition> {
+        let tick = self.world.time.tick as f32;
+        self.agent_layout(radius)
+            .into_iter()
+            .enumerate()
+            .map(|(i, (id, pos))| {
+                let offset = (tick * WOBBLE_SPEED + i as f32).sin() * WOBBLE_AMPLITUDE;
+                (
+                    id,
+                    AgentPosition {
+                        x: pos.x + offset,
+                        y: pos.y + offset,
+                    },
+                )
+            })
+            .collect()
     }
 
     /// События за последние `n` тиков (включая текущий), по порядку.
@@ -184,5 +264,47 @@ mod tests {
         assert!(b.recent_events(1).len() <= 1);
         assert_eq!(b.recent_events(2).len(), 2);
         assert!(b.recent_events(0).is_empty());
+    }
+
+    #[test]
+    fn agent_layout_is_deterministic() {
+        let a = SimBridge::new(42, 5);
+        let b = SimBridge::new(42, 5);
+        assert_eq!(a.agent_layout(200.0), a.agent_layout(200.0));
+        assert_eq!(a.agent_layout(200.0), b.agent_layout(200.0));
+        assert_eq!(a.agent_layout(200.0).len(), 5);
+    }
+
+    #[test]
+    fn agent_layout_positions_on_circle() {
+        let b = SimBridge::new(42, 7);
+        for pos in b.agent_layout(200.0).values() {
+            let r2 = pos.x * pos.x + pos.y * pos.y;
+            assert!((r2 - 200.0 * 200.0).abs() < 1.0, "r2 = {r2}");
+        }
+    }
+
+    #[test]
+    fn agent_layout_of_empty_world_is_empty() {
+        assert!(SimBridge::new(42, 0).agent_layout(200.0).is_empty());
+    }
+
+    #[test]
+    fn agent_positions_depend_on_tick() {
+        let mut b = SimBridge::new(42, 5);
+        let base = b.agent_layout(200.0);
+        b.update(2.0);
+        let moved = b.agent_positions(200.0);
+        assert_eq!(moved.len(), base.len());
+        assert_ne!(moved, base);
+        // Чтение позиций не меняет мир.
+        assert_eq!(b.world.time.tick, 2);
+    }
+
+    #[test]
+    fn agent_color_is_palette_cycle() {
+        assert_eq!(agent_color(AgentId(0)), agent_color(AgentId(8)));
+        assert_ne!(agent_color(AgentId(0)), agent_color(AgentId(1)));
+        assert_eq!(agent_color(AgentId(3)), AGENT_PALETTE[3]);
     }
 }
